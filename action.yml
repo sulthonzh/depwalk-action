@@ -1,0 +1,108 @@
+name: "depwalk Security Check"
+description: "Run @sulthonzh/depwalk security audit on your Node.js dependencies — detect install scripts, deprecated packages, missing licenses, and more."
+author: "sulthonzh"
+branding:
+  icon: "shield"
+  color: "red"
+
+inputs:
+  command:
+    description: "depwalk command to run (check, outdated, size, lockfile, graph)"
+    required: false
+    default: "check"
+  directory:
+    description: "Path to the project directory containing package.json"
+    required: false
+    default: "."
+  severity:
+    description: "Minimum severity to report (high, medium, low)"
+    required: false
+    default: "low"
+  output:
+    description: "Output format (text, json, markdown)"
+    required: false
+    default: "text"
+  fail-on:
+    description: "Fail the workflow if issues at this severity or higher are found (high, medium, low, none)"
+    required: false
+    default: "high"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install depwalk
+      shell: bash
+      run: npm install -g @sulthonzh/depwalk
+
+    - name: Run depwalk
+      shell: bash
+      id: depwalk
+      working-directory: ${{ inputs.directory }}
+      run: |
+        ARGS=""
+        
+        # Build command
+        CMD="${{ inputs.command }}"
+        ARGS="$CMD"
+        
+        # Add severity filter
+        if [ "${{ inputs.severity }}" != "low" ]; then
+          ARGS="$ARGS --min-severity ${{ inputs.severity }}"
+        fi
+        
+        # Add output format
+        if [ "${{ inputs.output }}" != "text" ]; then
+          ARGS="$ARGS --${{ inputs.output }}"
+        fi
+        
+        # Run and capture output
+        set +e
+        OUTPUT=$(depwalk $ARGS 2>&1)
+        EXIT_CODE=$?
+        set -e
+        
+        # Always save output
+        echo "result<<EOF" >> $GITHUB_OUTPUT
+        echo "$OUTPUT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        # Write to step summary if markdown
+        if [ "${{ inputs.output }}" = "markdown" ]; then
+          echo "$OUTPUT" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Check if we should fail
+        FAIL_ON="${{ inputs.fail-on }}"
+        if [ "$FAIL_ON" != "none" ]; then
+          # Check for high severity issues in output
+          case "$FAIL_ON" in
+            high)
+              if echo "$OUTPUT" | grep -qiE "(high|critical).*issue"; then
+                echo "::error::High severity issues found by depwalk"
+                exit 1
+              fi
+              ;;
+            medium)
+              if echo "$OUTPUT" | grep -qiE "(high|medium|critical).*issue"; then
+                echo "::error::Medium+ severity issues found by depwalk"
+                exit 1
+              fi
+              ;;
+            low)
+              if echo "$OUTPUT" | grep -qiE "(high|medium|low|critical).*issue"; then
+                echo "::error::Issues found by depwalk"
+                exit 1
+              fi
+              ;;
+          esac
+        fi
+        
+        # Pass through original exit code only for hard failures
+        if [ $EXIT_CODE -ne 0 ] && [ "$FAIL_ON" != "none" ]; then
+          exit $EXIT_CODE
+        fi
+
+outputs:
+  result:
+    description: "Raw output from depwalk"
+    value: ${{ steps.depwalk.outputs.result }}
